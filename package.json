@@ -1,6 +1,6 @@
 {
   "name": "files-contents-to-txt",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "CLI tools for exporting file contents",
   "main": "dist/index.js",
   "bin": {
