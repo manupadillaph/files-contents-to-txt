@@ -34,6 +34,7 @@ interface IFilterConfig {
     includeFolders: IFolder[];
     excludeFolders: IFolder[];
     fileTypes: string[];
+    fileNamePattern?: string; // Add regex filter
 }
 
 interface TreeNode {
@@ -104,7 +105,13 @@ function buildFolderTree(files: string[], rootDir: string): string {
     return renderTree(tree);
 }
 
-async function getFilteredFiles(rootDir: string, folders: IFolder[], excludeFolders: IFolder[]): Promise<string[]> {
+async function getFilteredFiles(
+    rootDir: string,
+    folders: IFolder[],
+    excludeFolders: IFolder[],
+    fileNamePattern: string = '',
+    selectedTypes: string[] = []
+): Promise<string[]> {
     const includedFiles = folders.flatMap((folder) => {
         const pattern = folder.includeSubfolders ? `${folder.path}/**/*` : `${folder.path}/*`;
         return glob.sync(pattern, {
@@ -119,8 +126,17 @@ async function getFilteredFiles(rootDir: string, folders: IFolder[], excludeFold
         return folder.includeSubfolders ? `${folder.path}/**/*` : `${folder.path}/*`;
     });
 
-    return includedFiles.filter((file) => !excludePatterns.some((pattern) => minimatch(file, pattern))).sort();
+    const regex = new RegExp(fileNamePattern || '.*');
+    return includedFiles
+        .filter((file) => {
+            const fileNameMatches = regex.test(path.basename(file));
+            const fileTypeMatches = selectedTypes.length === 0 || selectedTypes.includes(path.extname(file).toLowerCase());
+            const isNotExcluded = !excludePatterns.some((pattern) => minimatch(file, pattern));
+            return fileNameMatches && fileTypeMatches && isNotExcluded;
+        })
+        .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
+
 
 async function getActualFolderList(rootDir: string, selectedFolders: IFolder[], excludedFolders: IFolder[]): Promise<string[]> {
     const allFolders = selectedFolders.flatMap((folder) => {
@@ -153,7 +169,7 @@ async function main() {
             type: 'input',
             name: 'rootDir',
             message: 'Root directory:',
-            default:  process.cwd(), // '/home/manuelpadilla/sources/reposUbuntu/INNOVATIO/front-end-main',
+            default: process.cwd(), // '/home/manuelpadilla/sources/reposUbuntu/INNOVATIO/front-end-main',
         },
     ]);
 
@@ -284,11 +300,21 @@ async function main() {
         },
     ]);
 
+    const { fileNamePattern } = await inquirer.prompt([
+        {
+            type: 'input',
+            name: 'fileNamePattern',
+            message: 'Enter a regex pattern for file names (e.g., ".*\\.txt"):',
+            default: config.fileNamePattern || '',
+        },
+    ]);
+
     const { saveConfig } = await inquirer.prompt([
         {
             type: 'confirm',
             name: 'saveConfig',
             message: 'Save configuration?',
+            default: true,
         },
     ]);
 
@@ -298,6 +324,16 @@ async function main() {
                 type: 'input',
                 name: 'configName',
                 message: 'Configuration name:',
+                default: 'CUSTOM',
+            },
+        ]);
+
+        const { configPath } = await inquirer.prompt([
+            {
+                type: 'input',
+                name: 'configPath',
+                message: 'Config path:',
+                default: rootDir,
             },
         ]);
 
@@ -305,12 +341,15 @@ async function main() {
             includeFolders: selectedFolders,
             excludeFolders: excludedFolders,
             fileTypes: selectedTypes,
+            fileNamePattern: fileNamePattern,
         };
 
-        await fs.writeJson(`files-contents-config.${configName}.json`, newConfig, { spaces: 2 });
+        const finalConfigFile = path.join(configPath, `files-contents-config.${configName}.json`);
+        await fs.writeJson(finalConfigFile, newConfig, { spaces: 2 });
+        console.log(chalk.green(`Configuration saved to ${finalConfigFile}`));
     }
 
-    const finalFiles = files.filter((file) => selectedTypes.includes(path.extname(file).toLowerCase()));
+    const finalFiles = await getFilteredFiles(rootDir, selectedFolders, excludedFolders, fileNamePattern, selectedTypes);
 
     console.log('\nFiltered files:');
     const folderTree = buildFolderTree(finalFiles, rootDir);
@@ -343,9 +382,11 @@ async function main() {
                 default: true,
             },
         ]);
+
         if (includeFolderTree) {
             output.write('====== Folder Tree ======\n\n');
             output.write(folderTree);
+            output.write('\n\n');
         }
 
         output.write('====== File contents ======\n\n');
@@ -355,6 +396,8 @@ async function main() {
             output.write(await fs.readFile(fullPath, 'utf8'));
         }
         output.end();
+
+        console.log(chalk.green(`File contents exported to ${exportPath}`));
     }
 }
 

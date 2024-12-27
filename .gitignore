@@ -39,6 +39,7 @@ yarn.lock
 
 # Binary files
 /bin/*
+/**/bin/**/*
 # !/bin/files-contents-to-txt-*
 
 # Test coverage
