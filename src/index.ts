@@ -7,6 +7,24 @@ import { minimatch } from 'minimatch';
 
 // /home/manuelpadilla/sources/reposUbuntu/INNOVATIO/front-end-main
 
+const CONFIG_FILE_PATH = path.join(__dirname, 'config.json'); // Path where config will be saved
+
+// Function to read config
+async function getConfig(): Promise<{ rootDir: string }> {
+    try {
+        const config = await fs.readJson(CONFIG_FILE_PATH);
+        return config;
+    } catch (error) {
+        return { rootDir: process.cwd() }; // Default to current directory if no config found
+    }
+}
+
+// Function to save config
+async function saveConfig(rootDir: string): Promise<void> {
+    const config = { rootDir };
+    await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
+}
+
 const IGNORED_PATHS = [
     '**/node_modules/**',
     '**/tools/**',
@@ -34,7 +52,8 @@ interface IFilterConfig {
     includeFolders: IFolder[];
     excludeFolders: IFolder[];
     fileTypes: string[];
-    fileNamePattern?: string; // Add regex filter
+    includePattern?: string; // Add regex filter
+    excludePattern?: string; // New exclude regex
 }
 
 interface TreeNode {
@@ -109,7 +128,8 @@ async function getFilteredFiles(
     rootDir: string,
     folders: IFolder[],
     excludeFolders: IFolder[],
-    fileNamePattern: string = '',
+    includePattern: string = '',
+    excludePattern: string = '',
     selectedTypes: string[] = []
 ): Promise<string[]> {
     const includedFiles = folders.flatMap((folder) => {
@@ -126,17 +146,20 @@ async function getFilteredFiles(
         return folder.includeSubfolders ? `${folder.path}/**/*` : `${folder.path}/*`;
     });
 
-    const regex = new RegExp(fileNamePattern || '.*');
+    const includeRegex = includePattern && includePattern !== '' ? new RegExp(includePattern) : null;
+    const excludeRegex = excludePattern && excludePattern !== '' ? new RegExp(excludePattern) : null;
+
     return includedFiles
         .filter((file) => {
-            const fileNameMatches = regex.test(path.basename(file));
+            const fileName = path.basename(file);
+            const includeMatches = !includeRegex || includeRegex.test(fileName);
+            const excludeMatches = !excludeRegex || !excludeRegex.test(fileName);
             const fileTypeMatches = selectedTypes.length === 0 || selectedTypes.includes(path.extname(file).toLowerCase());
             const isNotExcluded = !excludePatterns.some((pattern) => minimatch(file, pattern));
-            return fileNameMatches && fileTypeMatches && isNotExcluded;
+            return includeMatches && excludeMatches && fileTypeMatches && isNotExcluded;
         })
         .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
-
 
 async function getActualFolderList(rootDir: string, selectedFolders: IFolder[], excludedFolders: IFolder[]): Promise<string[]> {
     const allFolders = selectedFolders.flatMap((folder) => {
@@ -164,240 +187,330 @@ async function getActualFolderList(rootDir: string, selectedFolders: IFolder[], 
 }
 
 async function main() {
-    const { rootDir } = await inquirer.prompt([
+    const { operation } = await inquirer.prompt([
         {
-            type: 'input',
-            name: 'rootDir',
-            message: 'Root directory:',
-            default: process.cwd(), // '/home/manuelpadilla/sources/reposUbuntu/INNOVATIO/front-end-main',
+            type: 'list',
+            name: 'operation',
+            message: 'Select operation:',
+            choices: [
+                { name: 'Export contents', value: 'export' },
+                { name: 'Delete export and config files', value: 'delete' },
+            ],
         },
     ]);
 
-    const filterFiles = glob.sync('files-contents-config.*.json', { maxDepth: 3 });
-    let config: IFilterConfig = {
-        includeFolders: [],
-        excludeFolders: [],
-        fileTypes: [],
-    };
+    const config = await getConfig();
+    
+    if (operation === 'delete') {
+        // Ask for the root directory
 
-    if (filterFiles.length > 0) {
-        const { useFilter } = await inquirer.prompt([
+        const { rootDir } = await inquirer.prompt([
             {
-                type: 'confirm',
-                name: 'useFilter',
-                message: 'Use existing filter?',
+                type: 'input',
+                name: 'rootDir',
+                message: 'Root directory to search for files to delete:',
+                default: config.rootDir, // Use last saved directory as the default
             },
         ]);
 
-        if (useFilter) {
-            const { filterFile } = await inquirer.prompt([
-                {
-                    type: 'list',
-                    name: 'filterFile',
-                    choices: filterFiles,
-                },
-            ]);
-            config = await fs.readJson(filterFile);
+        // Save the newly selected root directory
+        await saveConfig(rootDir);
+
+        // Search for matching files
+        const exportFiles = glob.sync('**/files-contents-export-*.txt', { cwd: rootDir, absolute: true });
+        const configFiles = glob.sync('**/files-contents-config.*.json', { cwd: rootDir, absolute: true });
+        const allFiles = [...exportFiles, ...configFiles];
+
+        if (allFiles.length === 0) {
+            console.log(chalk.yellow('No export or config files found in the specified directory.'));
+            return;
         }
-    }
 
-    const { depth } = await inquirer.prompt([
-        {
-            type: 'number',
-            name: 'depth',
-            message: 'Folder depth to display:',
-            default: 3,
-        },
-    ]);
+        // Let the user select files to delete
+        const { filesToDelete } = await inquirer.prompt([
+            {
+                type: 'checkbox',
+                name: 'filesToDelete',
+                message: 'Select files to delete:',
+                choices: allFiles.map((file) => ({ name: file, value: file })),
+            },
+        ]);
 
-    const folderChoices = getFoldersAtDepth(rootDir, depth);
-    const { selectedFolders }: { selectedFolders: IFolder[] } = await inquirer.prompt([
-        {
-            type: 'checkbox',
-            name: 'selectedFolders',
-            message: 'Select folders to include:',
-            choices: folderChoices
-                .map((folder) => ({
-                    name: folder.includeSubfolders ? `${folder.path} [+Subfolders]` : folder.path,
-                    value: folder,
-                }))
-                .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
-            default: folderChoices
-                .filter((folder) => config.includeFolders.some((f) => f.path === folder.path && f.includeSubfolders === folder.includeSubfolders))
-                .map((folder) => folder), // Return the actual folder object instead of string
-        },
-    ]);
+        if (filesToDelete.length === 0) {
+            console.log(chalk.yellow('No files selected for deletion.'));
+            return;
+        }
 
-    const removeChoices: IFolder[] = Array.from(
-        new Set(
-            (selectedFolders as IFolder[])
-                .flatMap((folder: IFolder) => {
-                    if (!folder.includeSubfolders) return [folder];
+        // Delete the selected files
+        for (const file of filesToDelete) {
+            await fs.remove(file);
+            console.log(chalk.green(`Deleted: ${file}`));
+        }
 
-                    const subfolders = getFoldersAtDepth(rootDir, depth, folder.path);
-                    return [folder, ...subfolders];
-                })
-                .map((f) => JSON.stringify(f))
-        )
-    )
-        .map((f) => JSON.parse(f))
-        .sort((a, b) => a.path.toLowerCase().localeCompare(b.path.toLowerCase()));
-
-    const { excludedFolders }: { excludedFolders: IFolder[] } = await inquirer.prompt([
-        {
-            type: 'checkbox',
-            name: 'excludedFolders',
-            message: 'Select folders to exclude:',
-            choices: removeChoices
-                .map((folder) => ({
-                    name: folder.includeSubfolders ? `${folder.path} [+Subfolders]` : folder.path,
-                    value: folder,
-                }))
-                .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
-            default: removeChoices
-                .filter((folder) => config.excludeFolders.some((f) => f.path === folder.path && f.includeSubfolders === folder.includeSubfolders))
-                .map((folder) => folder), // Return the actual folder object instead of string
-        },
-    ]);
-
-    // Show summary of selected folders
-    const actualFolders = await getActualFolderList(rootDir, selectedFolders, excludedFolders);
-
-    console.log('\nFolders to be processed:');
-    actualFolders.forEach((folder) => {
-        console.log(chalk.blue(`• ${folder}`));
-    });
-
-    const totalFolders = actualFolders.length;
-    console.log(chalk.yellow(`\nTotal folders to process: ${totalFolders}`));
-
-    const { continueProcess } = await inquirer.prompt([
-        {
-            type: 'confirm',
-            name: 'continueProcess',
-            message: 'Continue with these folders?',
-            default: true,
-        },
-    ]);
-
-    if (!continueProcess) {
-        console.log(chalk.yellow('Process cancelled'));
+        console.log(chalk.green('Selected files have been deleted.'));
         return;
-    }
+    } else {
 
-    const files = await getFilteredFiles(rootDir, selectedFolders, excludedFolders);
-    const fileTypes = Array.from(new Set(files.map((file) => path.extname(file).toLowerCase())))
-        .filter(Boolean)
-        .sort();
-
-    const { selectedTypes } = await inquirer.prompt([
-        {
-            type: 'checkbox',
-            name: 'selectedTypes',
-            message: 'Select file types:',
-            choices: fileTypes,
-            default: config.fileTypes,
-        },
-    ]);
-
-    const { fileNamePattern } = await inquirer.prompt([
-        {
-            type: 'input',
-            name: 'fileNamePattern',
-            message: 'Enter a regex pattern for file names (e.g., ".*\\.txt"):',
-            default: config.fileNamePattern || '',
-        },
-    ]);
-
-    const { saveConfig } = await inquirer.prompt([
-        {
-            type: 'confirm',
-            name: 'saveConfig',
-            message: 'Save configuration?',
-            default: true,
-        },
-    ]);
-
-    if (saveConfig) {
-        const { configName } = await inquirer.prompt([
+        const { rootDir } = await inquirer.prompt([
             {
                 type: 'input',
-                name: 'configName',
-                message: 'Configuration name:',
-                default: 'CUSTOM',
+                name: 'rootDir',
+                message: 'Root directory:',
+                default: config.rootDir, // Use last saved directory as the default
             },
         ]);
 
-        const { configPath } = await inquirer.prompt([
-            {
-                type: 'input',
-                name: 'configPath',
-                message: 'Config path:',
-                default: rootDir,
-            },
-        ]);
+        // Save the newly selected root directory
+        await saveConfig(rootDir);
 
-        const newConfig: IFilterConfig = {
-            includeFolders: selectedFolders,
-            excludeFolders: excludedFolders,
-            fileTypes: selectedTypes,
-            fileNamePattern: fileNamePattern,
+        const filterFiles = glob.sync('files-contents-config.*.json', { maxDepth: 3 });
+        let configFilter: IFilterConfig = {
+            includeFolders: [],
+            excludeFolders: [],
+            fileTypes: [],
         };
 
-        const finalConfigFile = path.join(configPath, `files-contents-config.${configName}.json`);
-        await fs.writeJson(finalConfigFile, newConfig, { spaces: 2 });
-        console.log(chalk.green(`Configuration saved to ${finalConfigFile}`));
-    }
+        if (filterFiles.length > 0) {
+            const { useFilter } = await inquirer.prompt([
+                {
+                    type: 'confirm',
+                    name: 'useFilter',
+                    message: 'Use existing filter?',
+                },
+            ]);
 
-    const finalFiles = await getFilteredFiles(rootDir, selectedFolders, excludedFolders, fileNamePattern, selectedTypes);
+            if (useFilter) {
+                const { filterFile } = await inquirer.prompt([
+                    {
+                        type: 'list',
+                        name: 'filterFile',
+                        choices: filterFiles,
+                    },
+                ]);
+                configFilter = await fs.readJson(filterFile);
+            }
+        }
 
-    console.log('\nFiltered files:');
-    const folderTree = buildFolderTree(finalFiles, rootDir);
-    console.log(folderTree);
-
-    const { exportContent } = await inquirer.prompt([
-        {
-            type: 'confirm',
-            name: 'exportContent',
-            message: 'Export file contents?',
-        },
-    ]);
-
-    if (exportContent) {
-        const { exportPath } = await inquirer.prompt([
+        const { depth } = await inquirer.prompt([
             {
-                type: 'input',
-                name: 'exportPath',
-                message: 'Export file path:',
-                default: path.join(rootDir, 'files-contents.txt'),
+                type: 'number',
+                name: 'depth',
+                message: 'Folder depth to display:',
+                default: 3,
             },
         ]);
-        const output = fs.createWriteStream(exportPath);
 
-        const { includeFolderTree } = await inquirer.prompt([
+        const folderChoices = getFoldersAtDepth(rootDir, depth);
+        const { selectedFolders }: { selectedFolders: IFolder[] } = await inquirer.prompt([
+            {
+                type: 'checkbox',
+                name: 'selectedFolders',
+                message: 'Select folders to include:',
+                choices: folderChoices
+                    .map((folder) => ({
+                        name: folder.includeSubfolders ? `${folder.path} [+Subfolders]` : folder.path,
+                        value: folder,
+                    }))
+                    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
+                default: folderChoices
+                    .filter((folder) => configFilter.includeFolders.some((f) => f.path === folder.path && f.includeSubfolders === folder.includeSubfolders))
+                    .map((folder) => folder), // Return the actual folder object instead of string
+            },
+        ]);
+
+        const removeChoices: IFolder[] = Array.from(
+            new Set(
+                (selectedFolders as IFolder[])
+                    .flatMap((folder: IFolder) => {
+                        if (!folder.includeSubfolders) return [folder];
+
+                        const subfolders = getFoldersAtDepth(rootDir, depth, folder.path);
+                        return [folder, ...subfolders];
+                    })
+                    .map((f) => JSON.stringify(f))
+            )
+        )
+            .map((f) => JSON.parse(f))
+            .sort((a, b) => a.path.toLowerCase().localeCompare(b.path.toLowerCase()));
+
+        const { excludedFolders }: { excludedFolders: IFolder[] } = await inquirer.prompt([
+            {
+                type: 'checkbox',
+                name: 'excludedFolders',
+                message: 'Select folders to exclude:',
+                choices: removeChoices
+                    .map((folder) => ({
+                        name: folder.includeSubfolders ? `${folder.path} [+Subfolders]` : folder.path,
+                        value: folder,
+                    }))
+                    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
+                default: removeChoices
+                    .filter((folder) => configFilter.excludeFolders.some((f) => f.path === folder.path && f.includeSubfolders === folder.includeSubfolders))
+                    .map((folder) => folder), // Return the actual folder object instead of string
+            },
+        ]);
+
+        // Show summary of selected folders
+        const actualFolders = await getActualFolderList(rootDir, selectedFolders, excludedFolders);
+
+        console.log('\nFolders to be processed:');
+        actualFolders.forEach((folder) => {
+            console.log(chalk.blue(`• ${folder}`));
+        });
+
+        const totalFolders = actualFolders.length;
+        console.log(chalk.yellow(`\nTotal folders to process: ${totalFolders}`));
+
+        const { continueProcess } = await inquirer.prompt([
             {
                 type: 'confirm',
-                name: 'includeFolderTree',
-                message: 'Include folder tree in export?',
+                name: 'continueProcess',
+                message: 'Continue with these folders?',
                 default: true,
             },
         ]);
 
-        if (includeFolderTree) {
-            output.write('====== Folder Tree ======\n\n');
-            output.write(folderTree);
-            output.write('\n\n');
+        if (!continueProcess) {
+            console.log(chalk.yellow('Process cancelled'));
+            return;
         }
 
-        output.write('====== File contents ======\n\n');
-        for (const file of finalFiles) {
-            const fullPath = path.join(rootDir, file);
-            output.write(`\n====== ${file} ======\n\n`);
-            output.write(await fs.readFile(fullPath, 'utf8'));
-        }
-        output.end();
+        const files = await getFilteredFiles(rootDir, selectedFolders, excludedFolders);
+        const fileTypes = Array.from(new Set(files.map((file) => path.extname(file).toLowerCase())))
+            .filter(Boolean)
+            .sort();
 
-        console.log(chalk.green(`File contents exported to ${exportPath}`));
+        const { selectedTypes } = await inquirer.prompt([
+            {
+                type: 'checkbox',
+                name: 'selectedTypes',
+                message: 'Select file types:',
+                choices: fileTypes,
+                default: configFilter.fileTypes,
+            },
+        ]);
+
+        const { includePattern } = await inquirer.prompt([
+            {
+                type: 'input',
+                name: 'includePattern',
+                message: 'Enter a regex pattern to include files (leave blank to skip):',
+                default: configFilter.includePattern || '',
+            },
+        ]);
+
+        const { excludePattern } = await inquirer.prompt([
+            {
+                type: 'input',
+                name: 'excludePattern',
+                message: 'Enter a regex pattern to exclude files (leave blank to skip):',
+                default: configFilter.excludePattern || '',
+            },
+        ]);
+
+        const { saveConfigFile } = await inquirer.prompt([
+            {
+                type: 'confirm',
+                name: 'saveConfig',
+                message: 'Save configuration?',
+                default: true,
+            },
+        ]);
+
+        if (saveConfigFile) {
+            const { configName } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'configName',
+                    message: 'Configuration name:',
+                    default: 'CUSTOM',
+                },
+            ]);
+
+            const { configPath } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'configPath',
+                    message: 'Config path:',
+                    default: rootDir,
+                },
+            ]);
+
+            const newConfig: IFilterConfig = {
+                includeFolders: selectedFolders,
+                excludeFolders: excludedFolders,
+                fileTypes: selectedTypes,
+                includePattern: includePattern,
+                excludePattern: excludePattern,
+            };
+
+            const finalConfigFile = path.join(configPath, `files-contents-config.${configName}.json`);
+            await fs.writeJson(finalConfigFile, newConfig, { spaces: 2 });
+            console.log(chalk.green(`Configuration saved to ${finalConfigFile}`));
+        }
+
+        const finalFiles = await getFilteredFiles(rootDir, selectedFolders, excludedFolders, includePattern, excludePattern, selectedTypes);
+
+        console.log('\nFiltered files:');
+        const folderTree = buildFolderTree(finalFiles, rootDir);
+        console.log(folderTree);
+
+        const { exportContent } = await inquirer.prompt([
+            {
+                type: 'confirm',
+                name: 'exportContent',
+                message: 'Export file contents?',
+            },
+        ]);
+
+        if (exportContent) {
+            const { exportName } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'exportName',
+                    message: 'Export file name:',
+                    default: 'CUSTOM',
+                },
+            ]);
+
+            const { exportPath } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'exportPath',
+                    message: 'Export path:',
+                    default: rootDir,
+                },
+            ]);
+
+            const finalExportFile = path.join(exportPath, `files-contents-export-${exportName}.txt`);
+
+            const output = fs.createWriteStream(finalExportFile);
+
+            const { includeFolderTree } = await inquirer.prompt([
+                {
+                    type: 'confirm',
+                    name: 'includeFolderTree',
+                    message: 'Include folder tree in export?',
+                    default: true,
+                },
+            ]);
+
+            if (includeFolderTree) {
+                output.write('====== Folder Tree ======\n\n');
+                output.write(folderTree);
+                output.write('\n\n');
+            }
+
+            output.write('====== File contents ======\n\n');
+            for (const file of finalFiles) {
+                const fullPath = path.join(rootDir, file);
+                output.write(`\n====== ${file} ======\n\n`);
+                output.write(await fs.readFile(fullPath, 'utf8'));
+            }
+            output.end();
+
+            console.log(chalk.green(`File contents exported to ${finalExportFile}`));
+        }
     }
 }
 

@@ -49,6 +49,6 @@ coverage/
 .cache/
 .temp/
 
-
+config.json
 files-contents.txt
 files-contents-config.*.json
