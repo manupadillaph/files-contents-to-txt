@@ -21,8 +21,8 @@ const IGNORED_PATHS = [
     '**/package-lock.json',
     '**/favicon.ico',
     '**/.gitignore',
-    '**/file_tree_filter.*.json',
-    '**/files_content.txt',
+    '**/files-contents-config.*.json',
+    '**/files-contents.txt',
 ];
 
 interface IFolder {
@@ -157,7 +157,7 @@ async function main() {
         },
     ]);
 
-    const filterFiles = glob.sync('file_tree_filter.*.json', { maxDepth: 3 });
+    const filterFiles = glob.sync('files-contents-config.*.json', { maxDepth: 3 });
     let config: IFilterConfig = {
         includeFolders: [],
         excludeFolders: [],
@@ -307,7 +307,7 @@ async function main() {
             fileTypes: selectedTypes,
         };
 
-        await fs.writeJson(`file_tree_filter.${configName}.json`, newConfig, { spaces: 2 });
+        await fs.writeJson(`files-contents-config.${configName}.json`, newConfig, { spaces: 2 });
     }
 
     const finalFiles = files.filter((file) => selectedTypes.includes(path.extname(file).toLowerCase()));
@@ -330,7 +330,7 @@ async function main() {
                 type: 'input',
                 name: 'exportPath',
                 message: 'Export file path:',
-                default: path.join(rootDir, 'files_content.txt'),
+                default: path.join(rootDir, 'files-contents.txt'),
             },
         ]);
         const output = fs.createWriteStream(exportPath);

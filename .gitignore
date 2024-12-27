@@ -47,3 +47,7 @@ coverage/
 # Misc
 .cache/
 .temp/
+
+
+files-contents.txt
+files-contents-config.*.json
