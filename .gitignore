@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# IDE files
+.idea/
+.vscode/
+*.sublime-*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Package manager locks
+# Uncomment the next line if you want to ignore package-lock.json
+package-lock.json
+# Uncomment the next line if you want to ignore yarn.lock
+yarn.lock
+
+# Old or temporary files
+/_OLD/
+/**/_OLD/**/
+*.bak
+*.tmp
+*.swp
+
+# Binary files
+/bin/*
+!/bin/files-contents-to-txt-*
+
+# Test coverage
+coverage/
+
+# Misc
+.cache/
+.temp/
